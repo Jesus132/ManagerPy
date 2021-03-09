@@ -1,143 +1,186 @@
 import re
 import sys
-import json
-import time
-from datetime import datetime
+# import time
+import tailer
 import os, stat
 import threading
-from fluent import sender
-from fluent import event
-
-timestamp=True
-changetimestamp = False
-nametimestamp = False
-module=True
-LogLevel=True
-Payload=True
-
-contmodule=False
-
-Split=['\x00 ','\x00']
-
-auxtimestamp=[]
-listReplaceP=[]
-dataJson = dict()
-dataJson['Data']={}
-dataJson['Data']['timestamp']=''
-dataJson['Data']['log_level']=''
-dataJson['Data']['module']=''
-dataJson['Data']['payload']=''
-
-patronTimestamp = re.compile(r'\d{1,4}[-|:]\d{1,2}[-|:]\d{1,2}')
-patronLogLevel = re.compile(r'\bInfo|info|INFORMACIÓN|información|adv|ADV|advertencia|ADVERTENCIA|Error|Err|ERROR\b')
-
-def SearchLogLevel(line, Splits):
-    listReplace = patronLogLevel.findall(line)
-    if(listReplace == []):
-        dataJson['Data']['log_level'] = 'Info'
-        return line
-    else:
-        dataJson['Data']['log_level'] = listReplace[0]
-        line = line.replace(listReplace[0],'')
-        return line
-
-def SearchTimestamp(line, Splits, namemod, Fluentd):
-    global timestamp, LogLevel, Payload
-    t = ''
-    TimeTampTake = line
-    listReplace = patronTimestamp.findall(line)
-    for lr in listReplace:
-        t += lr + ' '
-        TimeTampTake = TimeTampTake.replace(lr,'')
-    tim = listReplace[0].replace('-','/') + ' ' + listReplace[1]
-    if(dataJson['Data']['timestamp'] == tim):
-        LogLevel = False
-    else:
-        LogLevel = True
-        Fluentd.emit(namemod, dataJson)
-        # print('Send: ', dataJson)
-        dataJson['Data']['timestamp'] = tim
-    return TimeTampTake
-
-        
-
-def Search(line, Splits, namemod, Fluentd):
-    global timestamp, LogLevel, Payload
-    if(timestamp):
-        line = SearchTimestamp(line, Splits, namemod, Fluentd)
-    if(LogLevel):
-        line = SearchLogLevel(line, Splits)
-        dataJson['Data']['payload'] = line
-    else:
-        dataJson['Data']['payload'] += line
-
-def CountF(file):
-    count = 0
-    for i in file:
-        count += 1
-    return count
-
-def ReadFile(nameFile, namemod):
-    listline = []
-    numberline = None
-    lastline = True
-    # listlnumberline = []
-    dataJson['Data']['module'] = namemod
-    # FluentSender(tag, self.host, port, buffer_max, timeout)
-    Fluentd = sender.FluentSender('testpy', host='localhost', port=24224)
-    try:
-        f = open('log.txt', 'r')
-        for i in f:
-            if(i.split(',')[0] == namemod):
-                numberline = i.split(',')[1]
-        f = open(nameFile, 'r')
-        countline = CountF(f)
-        f.close()
-        f = open(nameFile, 'r')
-        while True:
-            line = ''
-            while len(line) == 0 or line[-1] != '\n':
-                tail = f.readline()
-                if tail == '':
-                    if(lastline):
-                        Fluentd.emit(namemod, dataJson)
-                        # print('Send: ', dataJson)
-                        lastline = False
-                    time.sleep(0.1)
-                    continue
-                line += tail
-                listline.append(tail)
-                lastline= True
-                if(countline >= 100):
-                    if(len(listline) >= countline - 5):
-                        Search(tail, Split, namemod, Fluentd)
-                else:
-                    Search(tail, Split, namemod, Fluentd)
-    except:
-        print('PermissionError: [Errno 13] Permission denied')
-
-def find_all(name, path):
-    result = []
-    dot=False
-    moduleDat=''
-    nameFile=''
-    for root, dirs, files in os.walk(path):
-        for file in files:
-            for f in file:
-                if (f == '.' or dot):
-                    dot=True
-                    nameFile += f
-                else:
-                    moduleDat += f
-            dot=False
-            if (nameFile == name):
-                pathLog = os.path.join(root, file)
-                print(pathLog, moduleDat)
-                input()
-                # ReadFile('Setup.log', moduleDat)
-                threading.Thread(name=moduleDat, target=ReadFile, args=(pathLog,moduleDat,)).start()
-            moduleDat=''
-            nameFile=''
-
+from datetime import datetime
+from elasticsearch import Elasticsearch
+ 
+IndexElastic = 'managerlogs'
+ElasticBody = dict()
+ElasticBody={}
+ElasticBody['timestamp']=''
+ElasticBody['log_level']='Info'
+ElasticBody['module']=''
+ElasticBody['payload']=''
+patronTimestamp = re.compile(r'\d{1,4}[-|:|_|/]\d{1,2}[-|:|_|/]\d{1,2}')
+patronLogLevel = re.compile(r'\bInfo|info|INFORMACIÓN|información|adv|ADV|advertencia|ADVERTENCIA|Error|Err|error|ERROR\b')
+def SearchLogLevel(line):
+   listReplace = patronLogLevel.findall(line)
+   if(listReplace == []):
+       ElasticBody['log_level'] = 'Info'
+       return line
+   else:
+       ElasticBody['log_level'] = listReplace[0]
+       line = line.replace(listReplace[0],'')
+       return line
+def SearchLine(line):
+   dataJson = dict()
+   dataJson={}
+   date=''
+   h=''
+   listTimeTamp = patronTimestamp.findall(line)
+   #print(listTimeTamp, 'tiempo encontrado en expresion')
+   if( listTimeTamp == []):
+       dataJson['timestamp']=''
+       dataJson['payload'] = line
+       return dataJson
+   line = SearchLogLevel(line) # Quitamos LogLevel de la linea
+   for time in listTimeTamp: # Quitamos timetamp de la linea
+       line = line.replace(time,'')
+       time = time.replace('/','-')
+       time = time.replace('_','-')
+       if( len(time.split('-')[0]) == 4 and date == ''):
+           date=time
+       else:
+           if( h == ''):
+               h=time
+   if(date == '' or h == ''):
+       dataJson['timestamp'] = ''
+       dataJson['payload'] = ''
+       return dataJson
+   dataJson['timestamp'] = date + 'T' + h.replace('_',':') + '.000Z'
+   dataJson['timestamp'] = date + 'T' + h.replace('-',':') + '.000Z'
+   dataJson['payload'] = line
+   return dataJson
+def SednElastic(pathFile, numberline, namemod, es):
+   SendElasticBody = dict()
+   SendElasticBody={}
+   SendElasticBody['timestamp']=''
+   SendElasticBody['log_level']='Info'
+   SendElasticBody['module']=namemod
+   SendElasticBody['path']=pathFile
+   SendElasticBody['payload']=''
+   listline = []
+   n=-1
+   f = open(pathFile, 'r')
+   for i in f:
+       n += 1
+       if( n >= numberline-40):
+           listline.append(i)
+   f.close()
+   for line in listline:
+       auxSendElasticBody = SearchLine(line)
+       if( SendElasticBody['timestamp'] == auxSendElasticBody['timestamp']):
+           SendElasticBody['payload'] += auxSendElasticBody['payload']
+       else:
+           if( SendElasticBody['payload'] != '' and SendElasticBody['timestamp'] != '' ):
+                   es.index(index=IndexElastic, body=SendElasticBody)
+                   # print(SendElasticBody)
+           SendElasticBody['timestamp'] = auxSendElasticBody['timestamp']
+           SendElasticBody['payload'] = auxSendElasticBody['payload']
+def ReadFile(pathFile, namemod, es):
+   try:
+       ElasticBody = dict()
+       ElasticBody={}
+       ElasticBody['timestamp']=''
+       ElasticBody['log_level']=''
+       ElasticBody['module']=namemod
+       ElasticBody['path']=pathFile
+       ElasticBody['payload']=''
+       # ElasticBody['module'] = namemod
+       numberline = -1
+       auxnumberline = -1
+       BD=['','','']
+       LogTxt=''
+       f = open(pathFile, 'r')
+       for i in f:
+           numberline += 1
+       f.close()
+       f = open('log.txt', 'r')
+       for i in f:
+           if(i.split(',')[0] == namemod):
+               BD = i.split(', ')
+       f.close()
+       SednElastic(pathFile, numberline, namemod, es)
+       auxnumberline = numberline
+       for line in tailer.follow(open(pathFile)):
+           auxElasticBody = SearchLine(line)
+           numberline += 1
+           if( BD[2] == auxElasticBody['timestamp']):
+               if( auxElasticBody['timestamp'] == '' ):
+                   auxElasticBody['timestamp'] = str(datetime.today()).replace(' ','T') + 'Z'
+                   auxElasticBody['log_level']='info'
+                   auxElasticBody['module']=namemod
+                   auxElasticBody['path']=pathFile
+                   auxElasticBody['payload']=line
+                   es.index(index=IndexElastic, body=auxElasticBody)
+                   #print(auxElasticBody)
+               else:
+                   ElasticBody['payload'] += auxElasticBody['payload']
+           else:
+               if( ElasticBody['payload'] != '' and ElasticBody['timestamp'] != ''):
+                   es.index(index=IndexElastic, body=ElasticBody)
+                   # print(ElasticBody)
+               ElasticBody['timestamp'] = auxElasticBody['timestamp']
+               ElasticBody['payload'] = auxElasticBody['payload']
+               if( BD[2] != ''):
+                   log = open('log.txt', 'r+')
+                   LogTxt = log.read().replace(namemod + ', '+ str(auxnumberline) + ', '+ BD[2], namemod + ', '+ str(numberline) + ', '+ ElasticBody['timestamp'])
+                   log.close()
+                   auxnumberline = numberline
+                   BD[2] = ElasticBody['timestamp']
+                   log = open('log.txt', 'w')
+                   log.writelines(LogTxt)
+                   log.close()
+               else:
+                   log = open('log.txt', 'a')
+                   log.write(namemod + ', '+ str(numberline) + ', '+ ElasticBody['timestamp'])
+                   log.write('\n')
+                   log.close()
+                   BD[2] = ElasticBody['timestamp']
+   except:
+       ELK={}
+       ELK['timestamp'] = str(datetime.today()).replace(' ','T') + 'Z'
+       ELK['log_level']='err'
+       ELK['module']=namemod
+       ELK['path']=pathFile
+       ELK['payload:']='PermissionError: [Errno 13] Permission denied: ' + pathFile
+       es.index(index=IndexElastic, body=ELK)
+def SearchLogs(ext, path, es):
+   conthilos=0
+   # result = []
+   dot=False
+   NameFile=''
+   extFile=''
+   ind=0
+   for root, dirs, files in os.walk(path):
+       for file in files:
+           for f in file:
+               if (f == '.' or dot):
+                   dot=True
+                   extFile += f
+               else:
+                   NameFile += f
+           dot=False
+           if (extFile == ext):
+               pathLog = os.path.join(root, file)
+               timeinfile = patronTimestamp.findall(NameFile)
+               if( timeinfile == [] ):
+                   ind += 1
+                   # print(NameFile, pathLog, '<---')  input()
+                   threading.Thread(name=NameFile, target=ReadFile, args=(pathLog,NameFile,es,)).start()
+                   print(ind, NameFile, pathLog)
+                  
+                  
+               else:
+                   print(NameFile, pathLog)
+                   # input('-------------------')
+           NameFile=''
+           extFile=''
 if __name__ == '__main__':
-    find_all('.log', 'C:/')
+   SearchLogs('.log', '/', Elasticsearch())
+   Elasticsearch().indices.put_settings(index=["*"], body={"number_of_replicas": 0})
+   #time.sleep(15)var/log
+ 
